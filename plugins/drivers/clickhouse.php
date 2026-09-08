@@ -17,13 +17,13 @@ if (isset($_GET["clickhouse"])) {
 				$this->error = '';
 				$this->errno = 0;
 				$this->affected_rows = 0;
-				list($file, $status, $headers, $error) = get_url($this->url . "/?database=" . rawurlencode($db), stream_context_create(array('http' => array(
+				list($file, $status, $headers, $error) = get_url($this->url . "/?database=" . rawurlencode($db) . "&output_format_json_validate_utf8=0", stream_context_create(array('http' => array(
 					'method' => 'POST',
 					'content' => $query,
 					'header' => array(
 						'Authorization: Basic ' . $this->authorization,
 						'Content-Type: text/plain; charset=UTF-8',
-						'X-ClickHouse-Format: JSONCompact',
+						'X-ClickHouse-Format: JSONCompactEachRowWithNamesAndTypes',
 					),
 					'ignore_errors' => 1,
 					'follow_location' => 0,
@@ -64,16 +64,24 @@ if (isset($_GET["clickhouse"])) {
 					return true;
 				}
 
-				$return = json_decode($file, true);
-				if (!is_array($return) || !isset($return['data']) || !isset($return['meta'])) {
-					$this->errno = json_last_error();
-					$this->error = ($this->errno && function_exists('json_last_error_msg')
-						? json_last_error_msg()
-						: 'Unexpected response returned by ClickHouse.'
-					);
+				// The document JSON formats replace invalid UTF-8 even with validation
+				// disabled. The row format preserves the bytes and supplies metadata.
+				$lines = explode("\n", rtrim($file, "\n"));
+				$names = clickhouse_decode_json(array_shift($lines));
+				$types = clickhouse_decode_json((string) array_shift($lines));
+				$data = array_map('Adminer\\clickhouse_decode_json', $lines);
+				if (
+					!is_array($names) || !is_array($types) || count($names) != count($types)
+					|| count(array_filter($data, 'is_array')) != count($data)
+				) {
+					$this->error = 'Unexpected response returned by ClickHouse.';
 					return false;
 				}
-				return new Result($return);
+				$meta = array();
+				foreach ($names as $i => $name) {
+					$meta[] = array('name' => $name, 'type' => $types[$i]);
+				}
+				return new Result(array('meta' => $meta, 'data' => $data, 'rows' => count($data)));
 			}
 
 			function query(string $query, bool $unbuffered = false) {
@@ -126,9 +134,8 @@ if (isset($_GET["clickhouse"])) {
 				foreach ((array) $result['data'] as $item) {
 					$row = array();
 					foreach ((array) $item as $key => $val) {
-						$type = (isset($this->meta[$key]['type']) ? $this->meta[$key]['type'] : '');
 						$row[$key] = ($val === null || is_scalar($val)
-							? $this->normalizeValue($val, $type)
+							? $val
 							: json_encode($val, 256 | 64) // JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES available since PHP 5.4
 						);
 					}
@@ -138,16 +145,6 @@ if (isset($_GET["clickhouse"])) {
 				$this->columns = array_map(function ($column) {
 					return $column['name'];
 				}, $this->meta); // array_column() is available since PHP 5.5
-			}
-
-			private function normalizeValue($value, string $type) {
-				// FixedString is NUL-padded to its declared width. The padding is
-				// storage detail rather than user data and breaks Adminer links and
-				// form controls if it is allowed through to the HTML response.
-				if (is_string($value) && preg_match('~(?:^|\()FixedString\(\d+\)~', $type)) {
-					return rtrim($value, "\0");
-				}
-				return $value;
 			}
 
 			function fetch_assoc() {
@@ -187,12 +184,20 @@ if (isset($_GET["clickhouse"])) {
 
 		public $functions = array("length", "lower", "round", "toDate", "toDateTime", "toString", "upper");
 		public $grouping = array("avg", "count", "count distinct", "max", "min", "sum");
-		public $insertFunctions = array("Date|DateTime" => "now");
+		public $insertFunctions = array("Date|DateTime" => "now", "String|FixedString" => "unhex");
 		public $editFunctions = array(
 			"Int|UInt|Float|Decimal" => "+/-",
 			"String|FixedString" => "concat",
 		);
 		public $generated = array("MATERIALIZED", "ALIAS", "EPHEMERAL");
+
+		function binaryInput(?string $val, array $field): string {
+			return ($val !== null && (!is_utf8($val) || preg_match('~[\r\x7F]~', $val)) ? "unhex" : "");
+		}
+
+		function quoteBinary(string $s): string {
+			return "unhex('" . bin2hex($s) . "')";
+		}
 
 		function operators(?array $tableStatus): array {
 			return array("=", "<", ">", "<=", ">=", "!=", "LIKE", "LIKE %%", "ILIKE", "ILIKE %%", "IN", "IS NULL", "NOT LIKE", "NOT ILIKE", "NOT IN", "IS NOT NULL", "SQL");
@@ -287,6 +292,56 @@ if (isset($_GET["clickhouse"])) {
 		}
 	}
 
+	/** Decode ClickHouse JSON without replacing invalid UTF-8 in String values.
+	* ClickHouse can emit arbitrary bytes inside JSON strings when validation is off.
+	* Hex-encode the string tokens before json_decode(), then restore their bytes.
+	* @return mixed null on malformed JSON
+	*/
+	function clickhouse_decode_json(string $json) {
+		$value = json_decode($json, true);
+		if (json_last_error() !== JSON_ERROR_UTF8) {
+			return $value;
+		}
+		$valid = true;
+		$json = preg_replace_callback('~"(?:[^"\\\\]|\\\\.)*"~s', function ($match) use (&$valid) {
+			if (preg_match('~[\x00-\x1F]~', $match[0])) {
+				$valid = false;
+			}
+			$value = preg_replace_callback('~\\\\(?:u[Dd][89aAbB][0-9a-fA-F]{2}\\\\u[Dd][c-fC-F][0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)~s', function ($escape) use (&$valid) {
+				$value = json_decode('"' . $escape[0] . '"');
+				if (!is_string($value)) {
+					$valid = false;
+					return "";
+				}
+				return $value;
+			}, substr($match[0], 1, -1));
+			return '"' . bin2hex($value) . '"';
+		}, $json);
+		$value = json_decode($json);
+		return ($valid && json_last_error() === JSON_ERROR_NONE ? clickhouse_decode_strings($value) : null);
+	}
+
+	/** Restore the byte strings protected by clickhouse_decode_json().
+	* @param mixed $value
+	* @return mixed
+	*/
+	function clickhouse_decode_strings($value) {
+		if (is_string($value)) {
+			return pack("H*", $value);
+		}
+		if (is_array($value)) {
+			return array_map('Adminer\clickhouse_decode_strings', $value);
+		}
+		if (is_object($value)) {
+			$return = array();
+			foreach ($value as $key => $val) {
+				$return[pack("H*", (string) $key)] = clickhouse_decode_strings($val);
+			}
+			return $return;
+		}
+		return $value;
+	}
+
 	function idf_escape(string $idf): string {
 		return "`" . str_replace("`", "``", $idf) . "`";
 	}
@@ -333,7 +388,7 @@ if (isset($_GET["clickhouse"])) {
 		if (!$generated && !$isView) {
 			$privileges["insert"] = 1;
 		}
-		if (!$generated && preg_match('~MergeTree$~', $engine)) {
+		if (!$generated && preg_match('~MergeTree$~', $engine) && !$row['is_in_primary_key'] && !$row['is_in_sorting_key']) {
 			$privileges["update"] = 1;
 		}
 		return array(

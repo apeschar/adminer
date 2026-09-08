@@ -274,6 +274,13 @@ abstract class SqlDriver {
 		return (method_exists($this->conn, 'value') ? $this->conn->value($val, $field) : $val);
 	}
 
+	/** SQL function for editing this value as hex, empty to use ordinary text.
+	* @param array{type: string} $field
+	*/
+	function binaryInput(?string $val, array $field): string {
+		return "";
+	}
+
 	/** Quote binary string */
 	function quoteBinary(string $s): string {
 		return q($s);

@@ -359,7 +359,7 @@ function where(array $where, array $fields = array()): string {
 		$field_type = $field["type"];
 		$is_binary = $field && (is_blob($field) || preg_match('~binary~', $field_type));
 		$return[] = $column
-			. ($is_binary && !is_utf8($val) ? " = " . driver()->quoteBinary($val) // the value is not converted to hexadecimal
+			. (driver()->binaryInput($val, $field) || ($is_binary && !is_utf8($val)) ? " = " . driver()->quoteBinary($val) // the value is not converted to hexadecimal
 				: (JUSH == "sql" && $field_type == "json" ? " = CAST(" . q($val) . " AS JSON)"
 				: (JUSH == "pgsql" && preg_match('~^jsonb?$~', $field["full_type"]) ? "::jsonb = " . q($val) . "::jsonb"
 				: (JUSH == "sql" && is_numeric($val) && preg_match('~\.~', $val) ? " LIKE " . q($val) // LIKE because of floats but slow with ints
@@ -991,7 +991,7 @@ function select_value($val, string $link, array $field, ?string $text_length): s
 		}
 	}
 	$val = driver()->value($val, $field);
-	$return = adminer()->editVal($val, $field);
+	$return = adminer()->editVal(driver()->binaryInput($val, $field) ? "0x" . bin2hex($val) : $val, $field);
 	if ($return !== null) {
 		if (!is_utf8($return)) {
 			$return = "\0"; // htmlspecialchars of binary data returns an empty string

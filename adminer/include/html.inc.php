@@ -540,6 +540,10 @@ function edit_form(string $table, array $fields, $row, ?bool $update, string $er
 				if ($autofocus !== false) {
 					$autofocus = ($field["auto_increment"] || $function == "now" || $function == "uuid" ? null : true); // null - don't autofocus this input but check the next one
 				}
+				if (!$_POST["save"] && is_string($value) && ($binary_function = driver()->binaryInput($value, $field))) {
+					$value = bin2hex($value);
+					$function = $binary_function;
+				}
 				input($field, $value, $function, $autofocus, $update);
 				if ($autofocus) {
 					$autofocus = false;

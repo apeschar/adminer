@@ -866,7 +866,7 @@ class Adminer {
 			$return = idf_escape($name) . " $function " . (preg_match("~^(\\d+|'[0-9.: -]') [A-Z_]+\$~i", $value) && JUSH != "pgsql" ? $value : $return);
 		} elseif (preg_match('~^(addtime|subtime|concat)$~', $function)) {
 			$return = "$function(" . idf_escape($name) . ", $return)";
-		} elseif (preg_match('~^(md5|sha1|password|encrypt)$~', $function)) {
+		} elseif (preg_match('~^(md5|sha1|password|encrypt|unhex)$~', $function)) {
 			$return = "$function($return)";
 		}
 		return unconvert_field($field, $return);

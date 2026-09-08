@@ -56,6 +56,7 @@
             "npx eslint -c conf/eslint.config.mjs"
         ],
         "test": [
+            "@php tests/unit/clickhouse.php",
             "@php tests/unit/compress.php",
             "@php tests/unit/format_number.php",
             "@php tests/unit/parse_server.php",

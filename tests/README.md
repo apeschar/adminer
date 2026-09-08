@@ -150,3 +150,17 @@ The unit tests in `tests/unit/*.php` check the functions which need no database 
 - `php tests/unit/url.php` runs a single one, they are standalone scripts requiring nothing but the PHP CLI.
 
 They print the errors found, so they print nothing and exit with 0 when everything is OK.
+
+## ClickHouse
+
+The HTTP driver test uses CLICKHOUSE_URL (default http://localhost:8123),
+with username and password ODBC. Grant this test user permission to create and
+drop the dedicated adminer_binary_test database. Run:
+
+    npx playwright test --config conf/playwright.config.js clickhouse.spec.js --project=native
+
+The fixture includes invalid UTF-8, embedded and trailing zero bytes, nullable
+binary values and ordinary Unicode text. It verifies table and SQL rendering,
+following the generated edit link, and saving a row without changing its bytes.
+The database is dropped before and after the test. The standalone unit test
+tests/unit/clickhouse.php also runs under composer test without a server.
